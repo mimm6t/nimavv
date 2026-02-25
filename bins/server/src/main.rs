@@ -547,14 +547,26 @@ async fn handle_stream(
                     }
                     return;
                 }
+                
+                // 未知请求类型，返回错误
+                tracing::warn!("Unknown request type: {:?}", String::from_utf8_lossy(&decrypted_data[..decrypted_data.len().min(50)]));
+                if let Ok(encrypted_err) = crypto.encrypt(b"ERROR: Unknown request") {
+                    let response_packet = SmtpPacket::new(encrypted_err);
+                    let _ = send.write_all(&response_packet.encode()).await;
+                }
+                let _ = send.finish();
+                return;
             }
             Err(e) => {
                 tracing::error!("Decryption failed: {}", e);
+                let _ = send.finish();
+                return;
             }
         }
+    } else {
+        tracing::error!("Failed to decode SMTP packet");
+        let _ = send.finish();
     }
-    
-    tracing::warn!("Unknown request type or decryption failed");
 }
 
 async fn handle_proxy_encrypted(
