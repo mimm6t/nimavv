@@ -56,7 +56,7 @@ impl SmtpPacket {
     
     /// 解码 SMTP 伪装包，返回包和消费的字节数
     pub fn decode(mut data: Bytes) -> Result<(Self, usize), ProtocolError> {
-        let original_len = data.len();
+        let _original_len = data.len();
         let header_len = SMTP_EHLO.len() + SMTP_MAIL_FROM.len() + SMTP_RCPT_TO.len() + SMTP_DATA.len();
         
         if data.len() < header_len + 4 + SMTP_END.len() {
