@@ -1,0 +1,11 @@
+name = "gvbyh-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-01-01"
+account_id = "b6fb628a1e803dd7798650f4f35314d1"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[[kv_namespaces]]
+binding = "SERVERS"
+id = "51370607b2d04b72ae0a41f544bd5163"

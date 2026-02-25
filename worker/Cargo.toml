@@ -1,0 +1,19 @@
+[package]
+name = "gvbyh-worker"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+getrandom = { version = "0.2", features = ["js"] }
+base64 = "0.22"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
