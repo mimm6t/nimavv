@@ -624,16 +624,13 @@ async fn handle_proxy_encrypted(
     let crypto_up = crypto.clone();
     let up = async move {
         let mut accumulated = bytes::BytesMut::new();
-        let mut buf = vec![0u8; 8192];
-        let mut transferred = 0u64;
-        tracing::info!("Starting upload relay");
+        let mut buf = vec![0u8; 16384]; // 增大缓冲区
+        
         loop {
             match client_recv.read(&mut buf).await {
                 Ok(Some(n)) => {
-                    tracing::debug!("Received {} bytes from client", n);
                     accumulated.extend_from_slice(&buf[..n]);
                     
-                    // 处理所有完整的包
                     loop {
                         if accumulated.is_empty() {
                             break;
@@ -642,80 +639,47 @@ async fn handle_proxy_encrypted(
                         match SmtpPacket::decode(accumulated.clone().freeze()) {
                             Ok((packet, consumed)) => {
                                 if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
-                                    transferred += decrypted.len() as u64;
-                                    tracing::debug!("Decrypted {} bytes, sending to target", decrypted.len());
-                                    if let Err(e) = target_write.write_all(&decrypted).await {
-                                        tracing::debug!("Target write error: {}", e);
+                                    if let Err(_) = target_write.write_all(&decrypted).await {
                                         return;
                                     }
-                                    
-                                    // 移除已处理的字节
                                     accumulated.advance(consumed);
                                 } else {
-                                    tracing::warn!("Failed to decrypt client data");
                                     return;
                                 }
                             }
-                            Err(_) => {
-                                // 需要更多数据
-                                break;
-                            }
+                            Err(_) => break,
                         }
                     }
                 }
-                Ok(None) => {
-                    tracing::info!("Client closed connection");
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!("Client read error: {}", e);
-                    break;
-                }
+                Ok(None) => break,
+                Err(_) => break,
             }
         }
-        tracing::info!("Upload finished: {} bytes", transferred);
     };
     
     let crypto_down = crypto.clone();
     let down = async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 16384]; // 增大缓冲区
         let mut transferred = 0u64;
-        tracing::info!("Starting download relay");
-        
-        // 立即尝试读取，看看是否有数据
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        tracing::debug!("Attempting first read from target");
         
         loop {
             match target_read.read(&mut buf).await {
                 Ok(0) => {
-                    tracing::info!("Target closed connection (transferred {} bytes)", transferred);
+                    tracing::debug!("Target closed (transferred {} bytes)", transferred);
                     break;
                 }
                 Ok(n) => {
                     transferred += n as u64;
-                    tracing::info!("Received {} bytes from target (total: {}), encrypting", n, transferred);
-                    // 加密目标数据
                     if let Ok(encrypted) = crypto_down.encrypt(&buf[..n]) {
                         let packet = SmtpPacket::new(encrypted);
-                        let packet_bytes = packet.encode();
-                        tracing::info!("Sending {} bytes encrypted packet to client", packet_bytes.len());
-                        if let Err(e) = client_send.write_all(&packet_bytes).await {
-                            tracing::warn!("Client write error: {}", e);
-                            break;
+                        if let Err(_) = client_send.write_all(&packet.encode()).await {
+                            break; // 客户端关闭
                         }
-                        tracing::info!("✓ Sent {} bytes to client", packet_bytes.len());
-                    } else {
-                        tracing::warn!("Failed to encrypt target data");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Target read error: {}", e);
-                    break;
-                }
+                Err(_) => break,
             }
         }
-        tracing::info!("Download finished: {} bytes", transferred);
         let _ = client_send.finish();
     };
     
