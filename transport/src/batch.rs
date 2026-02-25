@@ -83,16 +83,17 @@ pub mod mmsg {
                 iov_len: buffers[i].len(),
             });
             
+            let mut msg_hdr: libc::msghdr = unsafe { mem::zeroed() };
+            msg_hdr.msg_name = &mut addrs[i] as *mut _ as *mut libc::c_void;
+            msg_hdr.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as u32;
+            msg_hdr.msg_iov = &mut iovecs[i];
+            msg_hdr.msg_iovlen = 1;
+            msg_hdr.msg_control = ptr::null_mut();
+            msg_hdr.msg_controllen = 0;
+            msg_hdr.msg_flags = 0;
+            
             msghdrs.push(libc::mmsghdr {
-                msg_hdr: libc::msghdr {
-                    msg_name: &mut addrs[i] as *mut _ as *mut libc::c_void,
-                    msg_namelen: mem::size_of::<libc::sockaddr_storage>() as u32,
-                    msg_iov: &mut iovecs[i],
-                    msg_iovlen: 1,
-                    msg_control: ptr::null_mut(),
-                    msg_controllen: 0,
-                    msg_flags: 0,
-                },
+                msg_hdr,
                 msg_len: 0,
             });
         }
@@ -144,16 +145,17 @@ pub mod mmsg {
         }
         
         for i in 0..vlen {
+            let mut msg_hdr: libc::msghdr = unsafe { mem::zeroed() };
+            msg_hdr.msg_name = &addrs[i] as *const _ as *mut libc::c_void;
+            msg_hdr.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as u32;
+            msg_hdr.msg_iov = &iovecs[i] as *const _ as *mut libc::iovec;
+            msg_hdr.msg_iovlen = 1;
+            msg_hdr.msg_control = ptr::null_mut();
+            msg_hdr.msg_controllen = 0;
+            msg_hdr.msg_flags = 0;
+            
             msghdrs.push(libc::mmsghdr {
-                msg_hdr: libc::msghdr {
-                    msg_name: &addrs[i] as *const _ as *mut libc::c_void,
-                    msg_namelen: mem::size_of::<libc::sockaddr_storage>() as u32,
-                    msg_iov: &iovecs[i] as *const _ as *mut libc::iovec,
-                    msg_iovlen: 1,
-                    msg_control: ptr::null_mut(),
-                    msg_controllen: 0,
-                    msg_flags: 0,
-                },
+                msg_hdr,
                 msg_len: 0,
             });
         }
