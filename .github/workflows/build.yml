@@ -1,0 +1,240 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: nightly
+
+jobs:
+  build-client:
+    name: Build Client ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            name: x86_64
+          - target: arm-unknown-linux-musleabi
+            name: arm
+          - target: armv7-unknown-linux-musleabihf
+            name: armv7
+          - target: aarch64-unknown-linux-musl
+            name: aarch64
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download GeoIP Database
+      run: |
+        mkdir -p router/data
+        curl -L -o router/data/GeoLite2-Country.mmdb \
+          https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb
+        ls -lh router/data/GeoLite2-Country.mmdb
+
+    - name: Install Rust nightly
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install cross
+      run: cargo install cross --git https://github.com/cross-rs/cross
+
+    - name: Generate Cargo.lock
+      run: cargo generate-lockfile
+
+    - name: Build Client
+      run: cross build --release --target ${{ matrix.target }} -p gvbyh-client
+      continue-on-error: true
+
+    - name: Check if binary exists
+      id: check
+      run: |
+        if [ -f "target/${{ matrix.target }}/release/gvbyh-client" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Compress with UPX
+      if: steps.check.outputs.exists == 'true'
+      run: |
+        wget -q https://github.com/upx/upx/releases/download/v4.2.2/upx-4.2.2-amd64_linux.tar.xz
+        tar xf upx-4.2.2-amd64_linux.tar.xz
+        ./upx-4.2.2-amd64_linux/upx --best --lzma target/${{ matrix.target }}/release/gvbyh-client || true
+
+    - name: Rename binary
+      if: steps.check.outputs.exists == 'true'
+      run: cp target/${{ matrix.target }}/release/gvbyh-client gvbyh-client-${{ matrix.name }}
+
+    - name: Upload artifact
+      if: steps.check.outputs.exists == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: gvbyh-client-${{ matrix.name }}
+        path: gvbyh-client-${{ matrix.name }}
+
+  build-server:
+    name: Build Server ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            name: x86_64
+          - target: arm-unknown-linux-musleabi
+            name: arm
+          - target: armv7-unknown-linux-musleabihf
+            name: armv7
+          - target: aarch64-unknown-linux-musl
+            name: aarch64
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download GeoIP Database
+      run: |
+        mkdir -p router/data
+        curl -L -o router/data/GeoLite2-Country.mmdb \
+          https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb
+        ls -lh router/data/GeoLite2-Country.mmdb
+
+    - name: Install Rust nightly
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-server-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install cross
+      run: cargo install cross --git https://github.com/cross-rs/cross
+
+    - name: Generate Cargo.lock
+      run: cargo generate-lockfile
+
+    - name: Build Server
+      run: cross build --release --target ${{ matrix.target }} -p gvbyh-server
+      continue-on-error: true
+
+    - name: Check if binary exists
+      id: check
+      run: |
+        if [ -f "target/${{ matrix.target }}/release/gvbyh-server" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Compress with UPX
+      if: steps.check.outputs.exists == 'true'
+      run: |
+        wget -q https://github.com/upx/upx/releases/download/v4.2.2/upx-4.2.2-amd64_linux.tar.xz
+        tar xf upx-4.2.2-amd64_linux.tar.xz
+        ./upx-4.2.2-amd64_linux/upx --best --lzma target/${{ matrix.target }}/release/gvbyh-server || true
+
+    - name: Rename binary
+      if: steps.check.outputs.exists == 'true'
+      run: cp target/${{ matrix.target }}/release/gvbyh-server gvbyh-server-${{ matrix.name }}
+
+    - name: Upload artifact
+      if: steps.check.outputs.exists == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: gvbyh-server-${{ matrix.name }}
+        path: gvbyh-server-${{ matrix.name }}
+
+  deploy-worker:
+    name: Deploy Worker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install Wrangler
+      run: npm install -g wrangler
+    
+    - name: Deploy to Cloudflare Workers
+      run: |
+        cd worker
+        wrangler deploy
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      continue-on-error: true
+
+  release:
+    name: Create Release
+    needs: [build-client, build-server]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+
+    - name: Generate checksums
+      run: |
+        cd dist
+        find . -type f \( -name "gvbyh-client-*" -o -name "gvbyh-server-*" \) -exec sha256sum {} \; > SHA256SUMS
+        cat SHA256SUMS
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/*/gvbyh-client-*
+          dist/*/gvbyh-server-*
+        body: |
+          ## gvbyh-rust ${{ github.ref_name }}
+          
+          ### 客户端下载
+          - `gvbyh-client-x86_64`: x86_64 Linux
+          - `gvbyh-client-arm`: ARMv5/v6
+          - `gvbyh-client-armv7`: ARMv7
+          - `gvbyh-client-aarch64`: ARM64
+          
+          ### 服务端下载
+          - `gvbyh-server-x86_64`: x86_64 Linux
+          - `gvbyh-server-arm`: ARMv5/v6
+          - `gvbyh-server-armv7`: ARMv7
+          - `gvbyh-server-aarch64`: ARM64
+          
+          ### 校验
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
