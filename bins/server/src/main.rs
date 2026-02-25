@@ -599,6 +599,8 @@ async fn handle_proxy_encrypted(
     // 连接目标服务器
     let mut target_stream = match tokio::net::TcpStream::connect(target_addr).await {
         Ok(s) => {
+            // 优化 TCP socket
+            let _ = gvbyh_transport::optimize_tokio_tcp(&s);
             tracing::info!("✓ Connected to {}", target_addr);
             s
         }
