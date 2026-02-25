@@ -1,0 +1,36 @@
+[server]
+worker_url = "http://mirrors.ustc.ip-ddns.com"
+api_key = "your-api-key"
+
+[socks5]
+enable = true
+listen = "127.0.0.1:1080"
+
+[tproxy]
+enable = false
+port = 12345
+
+[dns]
+enable = true
+listen = "0.0.0.0:53"
+cn_upstream = "https://223.5.5.5/dns-query"
+foreign_upstream = "tls://1.1.1.1"
+
+[router]
+geoip_db = "/etc/gvbyh/GeoLite2-Country.mmdb"
+
+[pool]
+# 连接池配置 (高性能默认值)
+max_idle_secs = 600              # 连接空闲超时 (秒) - 默认10分钟
+health_check_interval_secs = 15  # 健康检查间隔 (秒) - 默认15秒
+connect_timeout_secs = 5         # 连接超时 (秒) - 默认5秒
+max_failures = 5                 # 最大失败次数后移除服务器 - 默认5次
+
+# 负载均衡策略: round_robin, least_latency, least_connections, random
+strategy = "least_latency"       # 默认: 最低延迟
+
+# IPv6 支持
+enable_ipv6 = true               # 启用 IPv6 支持 - 默认启用
+
+# 连接池持久化 (可选)
+# persist_path = "/var/lib/gvbyh/pool.json"

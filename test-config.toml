@@ -1,0 +1,28 @@
+[server]
+worker_url = "http://example.com"
+api_key = "test-key"
+
+[socks5]
+listen = "127.0.0.1:1080"
+enable = true
+
+[tproxy]
+enable = false
+port = 12345
+
+[dns]
+enable = false
+listen = "0.0.0.0:53"
+cn_upstream = "https://223.5.5.5/dns-query"
+foreign_upstream = "tls://1.1.1.1"
+
+[router]
+geoip_db = "/tmp/GeoLite2-Country.mmdb"
+
+[pool]
+max_idle_secs = 60
+health_check_interval_secs = 5
+connect_timeout_secs = 3
+max_failures = 2
+strategy = "least_latency"
+enable_ipv6 = true

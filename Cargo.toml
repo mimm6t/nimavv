@@ -1,0 +1,86 @@
+[workspace]
+members = [
+    "core",
+    "transport",
+    "router",
+    "worker-client",
+    "worker",
+    "bins/client",
+    "bins/server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95.0"
+authors = ["gvbyh-rust contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+# 异步运行时 (精简配置)
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio-util = { version = "0.7", default-features = false, features = ["codec"] }
+
+# 零拷贝buffer
+bytes = "1"
+
+# QUIC
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+
+# 加密 (硬件加速)
+aes-gcm = { version = "0.10", features = ["aes"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+
+# 序列化 (零拷贝)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# 并发数据结构
+dashmap = "6"
+crossbeam = "0.8"
+
+# 网络
+socket2 = { version = "0.5", features = ["all"] }
+trust-dns-resolver = { version = "0.23", default-features = false, features = ["tokio-runtime"] }
+trust-dns-proto = "0.23"
+
+# GeoIP
+maxminddb = "0.24"
+
+# 规则匹配
+aho-corasick = "1"
+regex = "1"
+
+# 错误处理
+anyhow = "1"
+thiserror = "1"
+
+# 日志
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }
+
+# 配置
+toml = "0.8"
+
+# 工具
+once_cell = "1"
+parking_lot = "0.12"
+pin-project = "1"
+
+[profile.release]
+opt-level = "z"          # 优化大小
+lto = true               # 链接时优化
+codegen-units = 1        # 单编译单元
+strip = true             # 移除符号
+panic = "abort"          # panic时直接abort
+overflow-checks = false  # 禁用溢出检查
+
+[profile.release-openwrt]
+inherits = "release"
+opt-level = "s"          # OpenWrt优化
