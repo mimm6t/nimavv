@@ -59,7 +59,9 @@ jobs:
       run: cargo generate-lockfile
 
     - name: Build Client
-      run: cross build --release --target ${{ matrix.target }} -p gvbyh-client
+      run: |
+        export RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
+        cross build --release --target ${{ matrix.target }} -p gvbyh-client
       continue-on-error: true
 
     - name: Check if binary exists
@@ -136,7 +138,9 @@ jobs:
       run: cargo generate-lockfile
 
     - name: Build Server
-      run: cross build --release --target ${{ matrix.target }} -p gvbyh-server
+      run: |
+        export RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
+        cross build --release --target ${{ matrix.target }} -p gvbyh-server
       continue-on-error: true
 
     - name: Check if binary exists
