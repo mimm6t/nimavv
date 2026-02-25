@@ -595,7 +595,7 @@ async fn handle_proxy_encrypted(
     };
     
     // 连接目标服务器
-    let target_stream = match tokio::net::TcpStream::connect(target_addr).await {
+    let mut target_stream = match tokio::net::TcpStream::connect(target_addr).await {
         Ok(s) => {
             tracing::info!("✓ Connected to {}", target_addr);
             s
