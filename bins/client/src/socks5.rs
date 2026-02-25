@@ -54,123 +54,110 @@ impl Socks5Server {
 }
 
 async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Result<()> {
-    let mut buf = [0u8; 512];
-    
-    stream.read_exact(&mut buf[..2]).await?;
-    if buf[0] != 0x05 {
-        anyhow::bail!("Unsupported SOCKS version");
-    }
-    
-    let nmethods = buf[1] as usize;
-    stream.read_exact(&mut buf[..nmethods]).await?;
-    stream.write_all(&[0x05, 0x00]).await?;
-    
-    stream.read_exact(&mut buf[..4]).await?;
-    if buf[1] != 0x01 {
-        anyhow::bail!("Only CONNECT supported");
-    }
-    
-    let target = match buf[3] {
-        0x01 => {
-            stream.read_exact(&mut buf[..6]).await?;
-            let ip = std::net::Ipv4Addr::new(buf[0], buf[1], buf[2], buf[3]);
-            let port = u16::from_be_bytes([buf[4], buf[5]]);
-            format!("{}:{}", ip, port)
-        }
-        0x03 => {
-            stream.read_exact(&mut buf[..1]).await?;
-            let len = buf[0] as usize;
-            stream.read_exact(&mut buf[..len + 2]).await?;
-            let domain = String::from_utf8_lossy(&buf[..len]);
-            let port = u16::from_be_bytes([buf[len], buf[len + 1]]);
-            format!("{}:{}", domain, port)
-        }
-        _ => anyhow::bail!("Unsupported address type"),
-    };
-    
-    let (mut proxy_send, mut proxy_recv) = conn.proxy_tcp(&target).await?;
-    stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-    
-    let (mut sr, mut sw) = stream.split();
-    let crypto = conn.crypto().clone();
-    
-    let upload = async {
-        let mut buf = vec![0u8; 8192];
-        let mut total = 0;
-        loop {
-            let n = sr.read(&mut buf).await?;
-            if n == 0 { 
-                tracing::debug!("Upload: client finished sending {} bytes", total);
-                break; 
-            }
-            total += n;
-            tracing::debug!("Upload: read {} bytes from client (total: {})", n, total);
-            // 加密并发送
-            let encrypted = crypto.encrypt(&buf[..n])?;
-            let packet = gvbyh_core::SmtpPacket::new(encrypted);
-            proxy_send.write_all(&packet.encode()).await?;
-            tracing::debug!("Upload: sent {} bytes packet to server", packet.encode().len());
-        }
-        // 关闭发送方向，但保持接收方向打开
-        tracing::debug!("Upload: calling finish()");
-        let _ = proxy_send.finish();
-        tracing::debug!("Upload: finish() called, task ending");
-        Ok::<_, anyhow::Error>(())
-    };
-    
-    let download = async {
-        let mut accumulated = bytes::BytesMut::new();
-        let mut buf = vec![0u8; 8192];
-        tracing::debug!("Download: starting to receive");
+    // 整体超时 60 秒
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut buf = [0u8; 512];
         
-        loop {
-            tracing::debug!("Download: waiting for data...");
-            match proxy_recv.read(&mut buf).await {
-                Ok(Some(n)) => {
-                    tracing::debug!("Download: received {} bytes chunk", n);
-                    accumulated.extend_from_slice(&buf[..n]);
-                    
-                    // 尝试解析完整的 SMTP 包
-                    loop {
-                        if accumulated.is_empty() {
-                            break;
-                        }
+        // SOCKS5 握手超时 5 秒
+        let target = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            stream.read_exact(&mut buf[..2]).await?;
+            if buf[0] != 0x05 {
+                anyhow::bail!("Unsupported SOCKS version");
+            }
+            
+            let nmethods = buf[1] as usize;
+            stream.read_exact(&mut buf[..nmethods]).await?;
+            stream.write_all(&[0x05, 0x00]).await?;
+            
+            stream.read_exact(&mut buf[..4]).await?;
+            if buf[1] != 0x01 {
+                anyhow::bail!("Only CONNECT supported");
+            }
+            
+            let target = match buf[3] {
+                0x01 => {
+                    stream.read_exact(&mut buf[..6]).await?;
+                    let ip = std::net::Ipv4Addr::new(buf[0], buf[1], buf[2], buf[3]);
+                    let port = u16::from_be_bytes([buf[4], buf[5]]);
+                    format!("{}:{}", ip, port)
+                }
+                0x03 => {
+                    stream.read_exact(&mut buf[..1]).await?;
+                    let len = buf[0] as usize;
+                    stream.read_exact(&mut buf[..len + 2]).await?;
+                    let domain = String::from_utf8_lossy(&buf[..len]);
+                    let port = u16::from_be_bytes([buf[len], buf[len + 1]]);
+                    format!("{}:{}", domain, port)
+                }
+                _ => anyhow::bail!("Unsupported address type"),
+            };
+            Ok::<_, anyhow::Error>(target)
+        }).await??;
+        
+        // 代理连接超时 5 秒
+        let (mut proxy_send, mut proxy_recv) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            conn.proxy_tcp(&target)
+        ).await??;
+        
+        stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        
+        let (mut sr, mut sw) = stream.split();
+        let crypto = conn.crypto().clone();
+        
+        let upload = async {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                // 每次读取超时 30 秒
+                match tokio::time::timeout(std::time::Duration::from_secs(30), sr.read(&mut buf)).await {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => {
+                        let encrypted = crypto.encrypt(&buf[..n])?;
+                        let packet = gvbyh_core::SmtpPacket::new(encrypted);
+                        proxy_send.write_all(&packet.encode()).await?;
+                    }
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(_) => break, // 超时
+                }
+            }
+            let _ = proxy_send.finish();
+            Ok::<_, anyhow::Error>(())
+        };
+        
+        let download = async {
+            let mut accumulated = bytes::BytesMut::new();
+            let mut buf = vec![0u8; 8192];
+            
+            loop {
+                // 每次读取超时 30 秒
+                match tokio::time::timeout(std::time::Duration::from_secs(30), proxy_recv.read(&mut buf)).await {
+                    Ok(Ok(Some(n))) => {
+                        accumulated.extend_from_slice(&buf[..n]);
                         
-                        match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
-                            Ok((packet, consumed)) => {
-                                tracing::debug!("Download: decoded packet with {} bytes payload, consumed {} bytes", packet.payload.len(), consumed);
-                                let decrypted = crypto.decrypt(&packet.payload)?;
-                                tracing::debug!("Download: decrypted {} bytes, writing to client", decrypted.len());
-                                sw.write_all(&decrypted).await?;
-                                tracing::debug!("Download: wrote {} bytes to client", decrypted.len());
-                                
-                                // 移除已处理的字节
-                                accumulated.advance(consumed);
+                        loop {
+                            if accumulated.is_empty() {
+                                break;
                             }
-                            Err(e) => {
-                                tracing::debug!("Download: incomplete packet, need more data: {}", e);
-                                break; // 需要更多数据
+                            
+                            match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
+                                Ok((packet, consumed)) => {
+                                    let decrypted = crypto.decrypt(&packet.payload)?;
+                                    sw.write_all(&decrypted).await?;
+                                    accumulated.advance(consumed);
+                                }
+                                Err(_) => break,
                             }
                         }
                     }
-                }
-                Ok(None) => {
-                    tracing::debug!("Download: server closed");
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!("Download: read error: {}", e);
-                    return Err(e.into());
+                    Ok(Ok(None)) => break,
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(_) => break, // 超时
                 }
             }
-        }
-        tracing::debug!("Download: task ending");
+            Ok::<_, anyhow::Error>(())
+        };
+        
+        tokio::try_join!(upload, download)?;
         Ok::<_, anyhow::Error>(())
-    };
-    
-    tracing::debug!("Starting upload and download tasks");
-    tokio::try_join!(upload, download)?;
-    tracing::debug!("Both tasks completed");
-    
-    Ok(())
+    }).await?
 }
