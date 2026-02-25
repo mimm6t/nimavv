@@ -106,14 +106,16 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
         let crypto = conn.crypto().clone();
         
         let upload = async {
-            let mut buf = vec![0u8; 8192];
+            let mut buf = vec![0u8; 16384]; // 增大缓冲区
             loop {
                 match sr.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
                         let encrypted = crypto.encrypt(&buf[..n])?;
                         let packet = gvbyh_core::SmtpPacket::new(encrypted);
-                        proxy_send.write_all(&packet.encode()).await?;
+                        if let Err(_) = proxy_send.write_all(&packet.encode()).await {
+                            break; // 服务端关闭
+                        }
                     }
                     Err(_) => break,
                 }
@@ -124,7 +126,7 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
         
         let download = async {
             let mut accumulated = bytes::BytesMut::new();
-            let mut buf = vec![0u8; 8192];
+            let mut buf = vec![0u8; 16384]; // 增大缓冲区
             
             loop {
                 match proxy_recv.read(&mut buf).await {
@@ -140,7 +142,7 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
                                 Ok((packet, consumed)) => {
                                     let decrypted = crypto.decrypt(&packet.payload)?;
                                     if let Err(_) = sw.write_all(&decrypted).await {
-                                        return Ok(()); // 客户端关闭，正常退出
+                                        return Ok(()); // 客户端关闭
                                     }
                                     accumulated.advance(consumed);
                                 }
