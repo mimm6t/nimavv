@@ -1,0 +1,25 @@
+[package]
+name = "gvbyh-client"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gvbyh-client"
+path = "src/main.rs"
+
+[dependencies]
+gvbyh-core = { path = "../../core" }
+gvbyh-transport = { path = "../../transport" }
+gvbyh-router = { path = "../../router" }
+gvbyh-worker-client = { path = "../../worker-client" }
+
+tokio = { workspace = true, features = ["signal"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml.workspace = true
+serde.workspace = true
+x25519-dalek.workspace = true
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+bytes.workspace = true
