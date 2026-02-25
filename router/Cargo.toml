@@ -1,0 +1,17 @@
+[package]
+name = "gvbyh-router"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+maxminddb.workspace = true
+aho-corasick.workspace = true
+regex.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+
+[features]
+default = ["geoip"]
+geoip = []
