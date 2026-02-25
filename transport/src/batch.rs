@@ -102,7 +102,7 @@ pub mod mmsg {
                 fd,
                 msghdrs.as_mut_ptr(),
                 vlen as u32,
-                libc::MSG_DONTWAIT,
+                libc::MSG_DONTWAIT as _,
                 ptr::null_mut(),
             )
         };

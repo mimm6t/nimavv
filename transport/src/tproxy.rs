@@ -335,7 +335,7 @@ async fn recv_from_with_origdst(
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control_buf.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = control_buf.len();
+        msg.msg_controllen = control_buf.len() as _;
         
         let n = libc::recvmsg(socket.as_raw_fd(), &mut msg, 0);
         
