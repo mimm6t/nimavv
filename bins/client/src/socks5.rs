@@ -32,9 +32,16 @@ impl Socks5Server {
     
     pub async fn run_with_pool(&self, pool: Arc<ConnectionPool>) -> Result<()> {
         let listener = TcpListener::bind(self.listen_addr).await?;
+        tracing::info!("SOCKS5 server listening on {}", self.listen_addr);
         
         loop {
             let (stream, peer) = listener.accept().await?;
+            
+            // 优化 TCP socket
+            if let Err(e) = gvbyh_transport::optimize_tokio_tcp(&stream) {
+                tracing::warn!("Failed to optimize TCP socket: {}", e);
+            }
+            
             let pool = pool.clone();
             
             tokio::spawn(async move {
