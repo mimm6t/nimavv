@@ -410,53 +410,73 @@ async fn handle_tcp_connection(
     router: Arc<GeoRouter>,
     pool: Arc<ConnectionPool>,
 ) -> Result<()> {
-    if router.should_proxy(orig_dst.ip()) {
-        // 代理模式
-        let conn = pool.get().await?;
-        conn.proxy_tcp(&orig_dst.to_string()).await?;
-        
-        let (mut send, mut recv) = conn.conn.open_bi().await?;
-        let (mut client_read, mut client_write) = client.split();
-        
-        let up = async {
-            let mut buf = vec![0u8; 8192];
-            loop {
-                let n = client_read.read(&mut buf).await?;
-                if n == 0 { break; }
-                send.write_all(&buf[..n]).await?;
-            }
-            send.finish()?;
-            Ok::<_, anyhow::Error>(())
-        };
-        
-        let down = async {
-            let mut buf = vec![0u8; 8192];
-            loop {
-                match recv.read(&mut buf).await? {
-                    Some(n) => client_write.write_all(&buf[..n]).await?,
-                    None => break,
+    // 设置总超时 60 秒
+    tokio::time::timeout(Duration::from_secs(60), async {
+        if router.should_proxy(orig_dst.ip()) {
+            // 代理模式 - 添加连接超时
+            let conn = tokio::time::timeout(
+                Duration::from_secs(5),
+                pool.get()
+            ).await??;
+            
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                conn.proxy_tcp(&orig_dst.to_string())
+            ).await??;
+            
+            let (mut send, mut recv) = conn.conn.open_bi().await?;
+            let (mut client_read, mut client_write) = client.split();
+            
+            let up = async {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    // 每次读取超时 30 秒
+                    match tokio::time::timeout(Duration::from_secs(30), client_read.read(&mut buf)).await {
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(n)) => send.write_all(&buf[..n]).await?,
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => break, // 超时，结束
+                    }
                 }
-            }
-            Ok::<_, anyhow::Error>(())
-        };
+                send.finish()?;
+                Ok::<_, anyhow::Error>(())
+            };
+            
+            let down = async {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    // 每次读取超时 30 秒
+                    match tokio::time::timeout(Duration::from_secs(30), recv.read(&mut buf)).await {
+                        Ok(Ok(Some(n))) => client_write.write_all(&buf[..n]).await?,
+                        Ok(Ok(None)) => break,
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => break, // 超时，结束
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            
+            tokio::try_join!(up, down)?;
+        } else {
+            // 直连模式 - 添加连接超时
+            let mut target = tokio::time::timeout(
+                Duration::from_secs(5),
+                TcpStream::connect(orig_dst)
+            ).await??;
+            
+            let (mut cr, mut cw) = client.split();
+            let (mut tr, mut tw) = target.split();
+            
+            tokio::try_join!(
+                tokio::io::copy(&mut cr, &mut tw),
+                tokio::io::copy(&mut tr, &mut cw)
+            )?;
+        }
         
-        tokio::try_join!(up, down)?;
-    } else {
-        // 直连模式
-        let mut target = TcpStream::connect(orig_dst).await?;
-        let (mut cr, mut cw) = client.split();
-        let (mut tr, mut tw) = target.split();
-        
-        tokio::try_join!(
-            tokio::io::copy(&mut cr, &mut tw),
-            tokio::io::copy(&mut tr, &mut cw)
-        )?;
-    }
-    
-    Ok(())
+        Ok::<_, anyhow::Error>(())
+    }).await?
 }
 
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 async fn handle_udp_packet(
     socket: Arc<UdpSocket>,
@@ -471,23 +491,24 @@ async fn handle_udp_packet(
     nat_table.insert((source, orig_dst), data.len()).await;
     
     if router.should_proxy(orig_dst.ip()) {
-        // 代理模式 - 通过 QUIC 转发 UDP
-        match pool.get().await {
-            Ok(conn) => {
-                match conn.proxy_udp(&orig_dst.to_string(), &data).await {
-                    Ok(response) => {
-                        if let Err(e) = send_udp_with_transparent(&socket, &response, source, orig_dst).await {
-                            tracing::debug!("UDP response send failed: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!("UDP proxy failed: {}, fallback to direct", e);
-                        direct_udp_forward(&data, source, orig_dst, &socket).await?;
-                    }
+        // 代理模式 - 添加超时控制
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let conn = pool.get().await?;
+            conn.proxy_udp(&orig_dst.to_string(), &data).await
+        }).await;
+        
+        match result {
+            Ok(Ok(response)) => {
+                if let Err(e) = send_udp_with_transparent(&socket, &response, source, orig_dst).await {
+                    tracing::debug!("UDP response send failed: {}", e);
                 }
             }
-            Err(e) => {
-                tracing::debug!("Pool get failed: {}, using direct", e);
+            Ok(Err(e)) => {
+                tracing::debug!("UDP proxy failed: {}, fallback to direct", e);
+                direct_udp_forward(&data, source, orig_dst, &socket).await?;
+            }
+            Err(_) => {
+                tracing::debug!("UDP proxy timeout, fallback to direct");
                 direct_udp_forward(&data, source, orig_dst, &socket).await?;
             }
         }
