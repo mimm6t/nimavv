@@ -20,6 +20,7 @@ pub enum WorkerError {
 
 #[derive(Clone)]
 pub struct WorkerClient {
+    #[allow(dead_code)]
     client: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -27,6 +28,7 @@ pub struct WorkerClient {
 
 // DoH DNS 解析器
 #[derive(Clone)]
+#[allow(dead_code)]
 struct DohResolver;
 
 impl Resolve for DohResolver {
