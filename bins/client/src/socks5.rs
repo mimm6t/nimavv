@@ -54,8 +54,8 @@ impl Socks5Server {
 }
 
 async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Result<()> {
-    // 整体超时 60 秒
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+    // 整体超时 300 秒（5分钟）
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let mut buf = [0u8; 512];
         
         // SOCKS5 握手超时 5 秒
@@ -94,9 +94,9 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
             Ok::<_, anyhow::Error>(target)
         }).await??;
         
-        // 代理连接超时 5 秒
+        // 代理连接超时 10 秒
         let (mut proxy_send, mut proxy_recv) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             conn.proxy_tcp(&target)
         ).await??;
         
@@ -108,16 +108,14 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
         let upload = async {
             let mut buf = vec![0u8; 8192];
             loop {
-                // 每次读取超时 30 秒
-                match tokio::time::timeout(std::time::Duration::from_secs(30), sr.read(&mut buf)).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => {
+                match sr.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
                         let encrypted = crypto.encrypt(&buf[..n])?;
                         let packet = gvbyh_core::SmtpPacket::new(encrypted);
                         proxy_send.write_all(&packet.encode()).await?;
                     }
-                    Ok(Err(e)) => return Err(e.into()),
-                    Err(_) => break, // 超时
+                    Err(_) => break,
                 }
             }
             let _ = proxy_send.finish();
@@ -129,9 +127,8 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
             let mut buf = vec![0u8; 8192];
             
             loop {
-                // 每次读取超时 30 秒
-                match tokio::time::timeout(std::time::Duration::from_secs(30), proxy_recv.read(&mut buf)).await {
-                    Ok(Ok(Some(n))) => {
+                match proxy_recv.read(&mut buf).await {
+                    Ok(Some(n)) => {
                         accumulated.extend_from_slice(&buf[..n]);
                         
                         loop {
@@ -142,22 +139,23 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
                             match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
                                 Ok((packet, consumed)) => {
                                     let decrypted = crypto.decrypt(&packet.payload)?;
-                                    sw.write_all(&decrypted).await?;
+                                    if let Err(_) = sw.write_all(&decrypted).await {
+                                        return Ok(()); // 客户端关闭，正常退出
+                                    }
                                     accumulated.advance(consumed);
                                 }
                                 Err(_) => break,
                             }
                         }
                     }
-                    Ok(Ok(None)) => break,
-                    Ok(Err(e)) => return Err(e.into()),
-                    Err(_) => break, // 超时
+                    Ok(None) => break,
+                    Err(_) => break,
                 }
             }
             Ok::<_, anyhow::Error>(())
         };
         
-        tokio::try_join!(upload, download)?;
+        let _ = tokio::join!(upload, download);
         Ok::<_, anyhow::Error>(())
     }).await?
 }
