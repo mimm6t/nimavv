@@ -60,7 +60,7 @@ jobs:
 
     - name: Build Client
       run: |
-        export RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
+        export RUSTFLAGS="-C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
         cross build --release --target ${{ matrix.target }} -p gvbyh-client
       continue-on-error: true
 
@@ -139,7 +139,7 @@ jobs:
 
     - name: Build Server
       run: |
-        export RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
+        export RUSTFLAGS="-C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
         cross build --release --target ${{ matrix.target }} -p gvbyh-server
       continue-on-error: true
 
