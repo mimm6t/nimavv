@@ -331,7 +331,6 @@ async fn handle_stream(
     buffer_pool: Arc<gvbyh_core::BufferPool>,
 ) {
     use gvbyh_core::{SmtpPacket, CryptoContext};
-    use bytes::Bytes;
     
     tracing::debug!("handle_stream started");
     
@@ -361,7 +360,7 @@ async fn handle_stream(
         }
     }
     
-    let mut buf = BufferGuard {
+    let _buf = BufferGuard {
         buffer: buffer_pool.get(65536),
         pool: buffer_pool,
     };
@@ -564,7 +563,6 @@ async fn handle_proxy_encrypted(
     mut client_recv: quinn::RecvStream,
     crypto: gvbyh_core::CryptoContext,
 ) -> Result<()> {
-    use tokio::net::TcpStream;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use gvbyh_core::SmtpPacket;
     
@@ -597,10 +595,8 @@ async fn handle_proxy_encrypted(
     };
     
     // 连接目标服务器
-    let mut target_stream = match tokio::net::TcpStream::connect(target_addr).await {
+    let target_stream = match tokio::net::TcpStream::connect(target_addr).await {
         Ok(s) => {
-            // 优化 TCP socket
-            let _ = gvbyh_transport::optimize_tokio_tcp(&s);
             tracing::info!("✓ Connected to {}", target_addr);
             s
         }
