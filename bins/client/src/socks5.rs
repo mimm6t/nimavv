@@ -113,47 +113,50 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
         let crypto = conn.crypto().clone();
         
         let upload = async {
-            let mut buf = vec![0u8; 16384]; // 增大缓冲区
+            let mut buf = vec![0u8; 65536]; // 大缓冲区
+            let mut batch = Vec::with_capacity(16);
+            
             loop {
                 match sr.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
                         let encrypted = crypto.encrypt(&buf[..n])?;
                         let packet = gvbyh_core::SmtpPacket::new(encrypted);
-                        if let Err(_) = proxy_send.write_all(&packet.encode()).await {
-                            break; // 服务端关闭
+                        batch.push(packet.encode());
+                        
+                        // 批量发送
+                        if batch.len() >= 16 {
+                            for data in batch.drain(..) {
+                                if proxy_send.write_all(&data).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
                         }
                     }
                     Err(_) => break,
                 }
+            }
+            
+            // 发送剩余
+            for data in batch {
+                let _ = proxy_send.write_all(&data).await;
             }
             let _ = proxy_send.finish();
             Ok::<_, anyhow::Error>(())
         };
         
         let download = async {
-            let mut accumulated = bytes::BytesMut::new();
-            let mut buf = vec![0u8; 16384]; // 增大缓冲区
+            let mut buf = vec![0u8; 65536]; // 大缓冲区
             
             loop {
                 match proxy_recv.read(&mut buf).await {
                     Ok(Some(n)) => {
-                        accumulated.extend_from_slice(&buf[..n]);
-                        
-                        loop {
-                            if accumulated.is_empty() {
-                                break;
-                            }
-                            
-                            match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
-                                Ok((packet, consumed)) => {
-                                    let decrypted = crypto.decrypt(&packet.payload)?;
-                                    if let Err(_) = sw.write_all(&decrypted).await {
-                                        return Ok(()); // 客户端关闭
-                                    }
-                                    accumulated.advance(consumed);
+                        // 零拷贝解密
+                        if let Ok((packet, _)) = gvbyh_core::SmtpPacket::decode(bytes::Bytes::copy_from_slice(&buf[..n])) {
+                            if let Ok(decrypted) = crypto.decrypt(&packet.payload) {
+                                if sw.write_all(&decrypted).await.is_err() {
+                                    break;
                                 }
-                                Err(_) => break,
                             }
                         }
                     }
