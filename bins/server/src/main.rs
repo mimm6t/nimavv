@@ -132,11 +132,22 @@ async fn main() -> Result<()> {
         new_uuid
     };
     
-    let server_ip = cli.server_ip.unwrap_or_else(|| {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(get_public_ip()).unwrap_or_else(|_| "0.0.0.0".to_string())
-        })
-    });
+    let server_ip = match cli.server_ip {
+        Some(ip) => ip,
+        None => {
+            tokio::task::block_in_place(|| {
+                match tokio::runtime::Handle::current().block_on(get_public_ip()) {
+                    Ok(ip) => ip,
+                    Err(e) => {
+                        tracing::error!("Failed to detect public IP: {}", e);
+                        tracing::error!("This server does not have a public IP address.");
+                        tracing::error!("Please deploy on a server with public IP, or specify --server-ip manually.");
+                        std::process::exit(1);
+                    }
+                }
+            })
+        }
+    };
     
     // 尝试绑定常见邮件端口（伪装）
     let preferred_ports = vec![25, 587, 465, 143, 993, 110, 995];
@@ -721,7 +732,7 @@ async fn get_public_ip() -> Result<String> {
                 if line.contains("inet ") && !line.contains("127.0.0.1") {
                     if let Some(ip) = line.split_whitespace().nth(1) {
                         if let Some(addr) = ip.split('/').next() {
-                            // 过滤局域网 IP
+                            // 只接受公网 IP
                             if !is_private_ip(addr) {
                                 return Ok(addr.to_string());
                             }
@@ -732,7 +743,7 @@ async fn get_public_ip() -> Result<String> {
         }
     }
     
-    Ok("0.0.0.0".to_string())
+    anyhow::bail!("No public IP address found on any network interface")
 }
 
 // 判断是否为私有/局域网 IP
