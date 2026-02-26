@@ -632,12 +632,11 @@ async fn handle_proxy_encrypted(
     
     let crypto_up = crypto.clone();
     let up = async move {
-        let mut buf = vec![0u8; 65536]; // 大缓冲区
+        let mut buf = vec![0u8; 65536];
         
         loop {
             match client_recv.read(&mut buf).await {
                 Ok(Some(n)) => {
-                    // 零拷贝：直接解密到目标
                     if let Ok((packet, _)) = SmtpPacket::decode(Bytes::copy_from_slice(&buf[..n])) {
                         if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
                             if target_write.write_all(&decrypted).await.is_err() {
@@ -656,8 +655,7 @@ async fn handle_proxy_encrypted(
     
     let crypto_down = crypto.clone();
     let down = async move {
-        let mut buf = vec![0u8; 65536]; // 大缓冲区
-        let mut batch = Vec::with_capacity(16); // 批量发送
+        let mut buf = vec![0u8; 65536];
         
         loop {
             match target_read.read(&mut buf).await {
@@ -665,25 +663,13 @@ async fn handle_proxy_encrypted(
                 Ok(n) => {
                     if let Ok(encrypted) = crypto_down.encrypt(&buf[..n]) {
                         let packet = SmtpPacket::new(encrypted);
-                        batch.push(packet.encode());
-                        
-                        // 批量发送：累积到16个包或超时
-                        if batch.len() >= 16 {
-                            for data in batch.drain(..) {
-                                if client_send.write_all(&data).await.is_err() {
-                                    return;
-                                }
-                            }
+                        if client_send.write_all(&packet.encode()).await.is_err() {
+                            break;
                         }
                     }
                 }
                 Err(_) => break,
             }
-        }
-        
-        // 发送剩余
-        for data in batch {
-            let _ = client_send.write_all(&data).await;
         }
         let _ = client_send.finish();
     };
