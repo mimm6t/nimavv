@@ -258,16 +258,30 @@ async fn main() -> Result<()> {
     tracing::info!("Pre-warming connection pool in background...");
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        for i in 0..100 {
+        // 快速预热：并发建立前20个连接
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let pool = pool_clone.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = pool.get().await;
+                i
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+        tracing::info!("✓ Pre-warmed 20 connections");
+        
+        // 慢速预热：串行建立剩余80个连接
+        for i in 20..100 {
             if let Ok(_conn) = pool_clone.get().await {
-                // 连接成功，保持在池中（不关闭）
-                if (i + 1) % 10 == 0 {
+                if (i + 1) % 20 == 0 {
                     tracing::debug!("Pre-warmed {} connections", i + 1);
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
-        tracing::info!("✓ Connection pool pre-warmed with 100 connections");
+        tracing::info!("✓ Connection pool fully pre-warmed (100 connections)");
     });
     
     // 测试连接（尝试所有服务器）
