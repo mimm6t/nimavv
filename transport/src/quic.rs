@@ -19,8 +19,15 @@ impl QuicClient {
         let mut transport = quinn::TransportConfig::default();
         transport.max_concurrent_bidi_streams(256u32.into());
         transport.max_concurrent_uni_streams(256u32.into());
-        transport.max_idle_timeout(Some(Duration::from_secs(60).try_into()?));
-        transport.keep_alive_interval(Some(Duration::from_secs(15)));
+        transport.max_idle_timeout(Some(Duration::from_secs(120).try_into()?));
+        transport.keep_alive_interval(Some(Duration::from_secs(25))); // SMTP心跳间隔
+        
+        // 隐藏QUIC特征
+        transport.initial_mtu(1200); // 避免QUIC典型1280
+        transport.min_mtu(1200);
+        
+        // BBR拥塞控制
+        transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         
         let crypto_config = rustls::ClientConfig::builder()
             .dangerous()
@@ -154,7 +161,37 @@ impl QuicConnection {
     
     pub async fn health_check(&self) -> Result<Duration> {
         let start = std::time::Instant::now();
-        self.send(b"ping").await?;
+        
+        // 打开一个新的双向流进行健康检查
+        let (mut send, mut recv) = self.conn.open_bi().await
+            .map_err(|e| anyhow::anyhow!("Failed to open stream for health check: {}", e))?;
+        
+        // 发送 ping 消息
+        let encrypted = self.crypto.encrypt(b"ping")?;
+        let packet = SmtpPacket::new(encrypted);
+        send.write_all(&packet.encode()).await
+            .map_err(|e| anyhow::anyhow!("Failed to send ping: {}", e))?;
+        send.finish()
+            .map_err(|e| anyhow::anyhow!("Failed to finish send stream: {}", e))?;
+        
+        // 等待响应
+        let mut buf = vec![0u8; 1024];
+        let n = match recv.read(&mut buf).await {
+            Ok(Some(n)) => n,
+            Ok(None) => anyhow::bail!("connection lost"),
+            Err(e) => anyhow::bail!("read error: {}", e),
+        };
+        
+        // 验证响应
+        let (response_packet, _) = SmtpPacket::decode(bytes::Bytes::from(buf[..n].to_vec()))
+            .map_err(|e| anyhow::anyhow!("Failed to decode response: {}", e))?;
+        let decrypted = self.crypto.decrypt(&response_packet.payload)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt response: {}", e))?;
+        
+        if &decrypted[..] != b"pong" {
+            anyhow::bail!("Invalid health check response");
+        }
+        
         Ok(start.elapsed())
     }
     

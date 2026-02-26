@@ -124,6 +124,15 @@ impl ConnectionPool {
         Self::with_config(client, servers, PoolConfig::default())
     }
     
+    // 快速检查连接是否仍然有效
+    async fn is_connection_alive(conn: &QuicConnection) -> bool {
+        // 使用短超时进行快速检查
+        match tokio::time::timeout(Duration::from_millis(500), conn.health_check()).await {
+            Ok(Ok(_)) => true,
+            _ => false,
+        }
+    }
+    
     pub fn with_config(client: QuicClient, servers: Vec<SocketAddr>, config: PoolConfig) -> Self {
         Self::with_config_and_keys(client, servers, config, HashMap::new())
     }
@@ -175,19 +184,28 @@ impl ConnectionPool {
         
         let addr = self.select_server().await?;
         
-        // 尝试复用连接
+        // 尝试复用连接 - 增加连接有效性检查
         {
             let mut conns = self.connections.write().await;
             if let Some(pooled) = conns.get_mut(&addr) {
                 if pooled.last_used.elapsed() < self.config.max_idle {
                     if let Some(ref conn) = pooled.conn {
-                        pooled.last_used = Instant::now();
-                        pooled.health.connection_count += 1;
-                        self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-                        return Ok(conn.clone());
+                        // 快速验证连接是否仍然有效
+                        if Self::is_connection_alive(conn).await {
+                            pooled.last_used = Instant::now();
+                            pooled.health.connection_count += 1;
+                            self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+                            tracing::debug!("Reusing connection to {}", addr);
+                            return Ok(conn.clone());
+                        } else {
+                            tracing::warn!("Connection to {} is dead, removing from pool", addr);
+                            conns.remove(&addr);
+                        }
                     }
+                } else {
+                    tracing::debug!("Connection to {} expired, removing from pool", addr);
+                    conns.remove(&addr);
                 }
-                conns.remove(&addr);
             }
         }
         
@@ -237,7 +255,11 @@ impl ConnectionPool {
         let mut conns = self.connections.write().await;
         let failures = if let Some(pooled) = conns.get_mut(&addr) {
             pooled.health.failures += 1;
+            pooled.conn = None; // 立即清除失效连接
             self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
+            if pooled.health.connection_count > 0 {
+                self.metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
+            }
             tracing::warn!("Server {} marked as failed ({}/{})", addr, pooled.health.failures, self.config.max_failures);
             pooled.health.failures
         } else {
@@ -363,20 +385,37 @@ impl ConnectionPool {
             }
             
             if let Some(ref conn) = pooled.conn {
-                match conn.health_check().await {
-                    Ok(latency) => {
+                // 使用超时机制进行健康检查
+                match tokio::time::timeout(
+                    Duration::from_secs(3), 
+                    conn.health_check()
+                ).await {
+                    Ok(Ok(latency)) => {
                         pooled.health.failures = 0;
                         pooled.health.latency_ms = latency.as_millis() as u64;
                         pooled.health.last_check = Instant::now();
                         tracing::debug!("Server {} healthy, latency: {}ms", addr, pooled.health.latency_ms);
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         pooled.health.failures += 1;
+                        pooled.conn = None; // 清除失效连接
                         self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("Server {} health check failed ({}/{}): {}", 
                             addr, pooled.health.failures, self.config.max_failures, e);
                         
                         // 立即标记为不可用
+                        if pooled.health.failures >= self.config.max_failures {
+                            to_remove.push(addr);
+                        }
+                    }
+                    Err(_) => {
+                        // 超时
+                        pooled.health.failures += 1;
+                        pooled.conn = None; // 清除失效连接
+                        self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!("Server {} health check timed out ({}/{})", 
+                            addr, pooled.health.failures, self.config.max_failures);
+                        
                         if pooled.health.failures >= self.config.max_failures {
                             to_remove.push(addr);
                         }
