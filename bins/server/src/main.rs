@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
 use gvbyh_worker_client::WorkerClient;
-use bytes::{BytesMut, Buf};
+use bytes::{Bytes, BytesMut};
 
 // DoH 解析器
 async fn resolve_with_doh(domain: &str) -> anyhow::Result<std::net::IpAddr> {
