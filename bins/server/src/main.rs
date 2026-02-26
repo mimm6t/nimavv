@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
 use gvbyh_worker_client::WorkerClient;
-use bytes::{Bytes, BytesMut, Buf};
+use bytes::{BytesMut, Buf};
 
 // DoH 解析器
 async fn resolve_with_doh(domain: &str) -> anyhow::Result<std::net::IpAddr> {
@@ -205,6 +205,29 @@ async fn main() -> Result<()> {
                         tracing::warn!("Failed to update server info: {}", e);
                     }
                 }
+            }
+        }
+    });
+    
+    // 启动SMTP伪装流量任务
+    tokio::spawn(async move {
+        use tokio::net::TcpStream;
+        use tokio::io::AsyncWriteExt;
+        use rand::Rng;
+        
+        let mut rng = rand::thread_rng();
+        loop {
+            // 随机延迟 25-35 秒
+            let delay = rng.gen_range(25..=35);
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            
+            // 尝试连接 smtp.gmail.com:25
+            if let Ok(mut stream) = TcpStream::connect("smtp.gmail.com:25").await {
+                // 发送 EHLO 命令（不等待响应）
+                let _ = stream.write_all(b"EHLO localhost\r\n").await;
+                tracing::debug!("Sent SMTP decoy traffic to smtp.gmail.com");
+                // 立即关闭连接
+                drop(stream);
             }
         }
     });
@@ -635,7 +658,7 @@ async fn handle_proxy_encrypted(
                 Ok(Some(n)) => {
                     accumulated.extend_from_slice(&buf[..n]);
                     
-                    // 尝试解析所有完整的包
+                    // 尝试解析所有完整的SMTP包
                     while !accumulated.is_empty() {
                         match SmtpPacket::decode(accumulated.clone().freeze()) {
                             Ok((packet, consumed)) => {
@@ -648,7 +671,7 @@ async fn handle_proxy_encrypted(
                                     return;
                                 }
                             }
-                            Err(_) => break, // 等待更多数据
+                            Err(_) => break,
                         }
                     }
                 }
