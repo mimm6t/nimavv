@@ -90,32 +90,12 @@ async fn main() -> Result<()> {
     
     tracing::info!("gvbyh-server v{} starting...", env!("CARGO_PKG_VERSION"));
     
-    // Persist DH secret to maintain consistent keypair across restarts
-    let dh_secret_file = ".gvbyh-server-dhsecret";
-    let dh_secret_bytes = if std::path::Path::new(dh_secret_file).exists() {
-        std::fs::read(dh_secret_file)?
-    } else {
-        let mut rng = rand::thread_rng();
-        let mut secret_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rng, &mut secret_bytes);
-        std::fs::write(dh_secret_file, &secret_bytes)?;
-        
-        // Set file permissions to 600 (owner read/write only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(dh_secret_file)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(dh_secret_file, perms)?;
-            tracing::info!("✓ DH secret file created with secure permissions (600)");
-        }
-        
-        secret_bytes.to_vec()
-    };
+    // 每次启动生成新的DH密钥对（前向保密）
+    let mut rng = rand::thread_rng();
+    let mut secret_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rng, &mut secret_bytes);
     
-    let dh_secret_array: [u8; 32] = dh_secret_bytes.try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid DH secret length"))?;
-    let dh_secret = x25519_dalek::StaticSecret::from(dh_secret_array);
+    let dh_secret = x25519_dalek::StaticSecret::from(secret_bytes);
     let dh_public = x25519_dalek::PublicKey::from(&dh_secret);
     
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -265,8 +245,16 @@ async fn start_quic_server(
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
     
     let mut server_config = ServerConfig::with_single_cert(vec![cert_der], key_der)?;
-    let transport_config = Arc::new(quinn::TransportConfig::default());
-    server_config.transport_config(transport_config);
+    
+    let mut transport_config = quinn::TransportConfig::default();
+    // 隐藏QUIC特征
+    transport_config.initial_mtu(1200);
+    transport_config.min_mtu(1200);
+    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(25)));
+    // BBR拥塞控制
+    transport_config.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    
+    server_config.transport_config(Arc::new(transport_config));
     
     let endpoint = Endpoint::server(server_config, addr)?;
     tracing::info!("✓ QUIC server listening on {} (SNI: smtp.gmail.com)", addr);
@@ -644,31 +632,19 @@ async fn handle_proxy_encrypted(
     
     let crypto_up = crypto.clone();
     let up = async move {
-        let mut accumulated = bytes::BytesMut::new();
-        let mut buf = vec![0u8; 16384]; // 增大缓冲区
+        let mut buf = vec![0u8; 65536]; // 大缓冲区
         
         loop {
             match client_recv.read(&mut buf).await {
                 Ok(Some(n)) => {
-                    accumulated.extend_from_slice(&buf[..n]);
-                    
-                    loop {
-                        if accumulated.is_empty() {
-                            break;
-                        }
-                        
-                        match SmtpPacket::decode(accumulated.clone().freeze()) {
-                            Ok((packet, consumed)) => {
-                                if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
-                                    if let Err(_) = target_write.write_all(&decrypted).await {
-                                        return;
-                                    }
-                                    accumulated.advance(consumed);
-                                } else {
-                                    return;
-                                }
+                    // 零拷贝：直接解密到目标
+                    if let Ok((packet, _)) = SmtpPacket::decode(Bytes::copy_from_slice(&buf[..n])) {
+                        if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
+                            if target_write.write_all(&decrypted).await.is_err() {
+                                break;
                             }
-                            Err(_) => break,
+                        } else {
+                            break;
                         }
                     }
                 }
@@ -680,26 +656,34 @@ async fn handle_proxy_encrypted(
     
     let crypto_down = crypto.clone();
     let down = async move {
-        let mut buf = vec![0u8; 16384]; // 增大缓冲区
-        let mut transferred = 0u64;
+        let mut buf = vec![0u8; 65536]; // 大缓冲区
+        let mut batch = Vec::with_capacity(16); // 批量发送
         
         loop {
             match target_read.read(&mut buf).await {
-                Ok(0) => {
-                    tracing::debug!("Target closed (transferred {} bytes)", transferred);
-                    break;
-                }
+                Ok(0) => break,
                 Ok(n) => {
-                    transferred += n as u64;
                     if let Ok(encrypted) = crypto_down.encrypt(&buf[..n]) {
                         let packet = SmtpPacket::new(encrypted);
-                        if let Err(_) = client_send.write_all(&packet.encode()).await {
-                            break; // 客户端关闭
+                        batch.push(packet.encode());
+                        
+                        // 批量发送：累积到16个包或超时
+                        if batch.len() >= 16 {
+                            for data in batch.drain(..) {
+                                if client_send.write_all(&data).await.is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
                 Err(_) => break,
             }
+        }
+        
+        // 发送剩余
+        for data in batch {
+            let _ = client_send.write_all(&data).await;
         }
         let _ = client_send.finish();
     };
