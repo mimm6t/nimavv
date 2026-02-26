@@ -19,20 +19,24 @@ impl QuicClient {
         let mut transport = quinn::TransportConfig::default();
         transport.max_concurrent_bidi_streams(256u32.into());
         transport.max_concurrent_uni_streams(256u32.into());
-        transport.max_idle_timeout(Some(Duration::from_secs(120).try_into()?));
-        transport.keep_alive_interval(Some(Duration::from_secs(25))); // SMTP心跳间隔
+        transport.max_idle_timeout(Some(Duration::from_secs(180).try_into()?));  // 180秒
+        transport.keep_alive_interval(Some(Duration::from_secs(25)));
         
         // 隐藏QUIC特征
-        transport.initial_mtu(1200); // 避免QUIC典型1280
+        transport.initial_mtu(1200);
         transport.min_mtu(1200);
         
         // BBR拥塞控制
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         
-        let crypto_config = rustls::ClientConfig::builder()
+        let mut crypto_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipVerification))
             .with_no_client_auth();
+        
+        // 启用0-RTT（会话恢复）
+        crypto_config.enable_early_data = true;
+        crypto_config.resumption = rustls::client::Resumption::in_memory_sessions(256);
         
         let mut client_config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(crypto_config)?

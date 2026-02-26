@@ -37,10 +37,10 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_idle: Duration::from_secs(60),  // 60秒而不是600秒
-            health_check_interval: Duration::from_secs(5),  // 5秒而不是15秒
-            connect_timeout: Duration::from_secs(3),  // 3秒而不是5秒
-            max_failures: 2,  // 2次失败就移除，不是5次
+            max_idle: Duration::from_secs(180),  // 180秒空闲时间
+            health_check_interval: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(3),
+            max_failures: 2,
             strategy: LoadBalanceStrategy::LeastLatency,
             enable_ipv6: true,
             persist_path: None,
