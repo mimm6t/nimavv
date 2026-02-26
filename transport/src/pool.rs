@@ -37,10 +37,10 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_idle: Duration::from_secs(180),  // 180秒空闲时间
+            max_idle: Duration::from_secs(180),
             health_check_interval: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(3),
-            max_failures: 2,
+            max_failures: 10,  // 增加到10次，避免过早标记为不健康
             strategy: LoadBalanceStrategy::LeastLatency,
             enable_ipv6: true,
             persist_path: None,
@@ -254,8 +254,8 @@ impl ConnectionPool {
     async fn mark_server_failed(&self, addr: SocketAddr) {
         let mut conns = self.connections.write().await;
         let failures = if let Some(pooled) = conns.get_mut(&addr) {
-            pooled.health.failures += 1;
-            pooled.conn = None; // 立即清除失效连接
+            pooled.health.failures = (pooled.health.failures + 1).min(self.config.max_failures);  // 限制最大值
+            pooled.conn = None;
             self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
             if pooled.health.connection_count > 0 {
                 self.metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
@@ -263,7 +263,6 @@ impl ConnectionPool {
             tracing::warn!("Server {} marked as failed ({}/{})", addr, pooled.health.failures, self.config.max_failures);
             pooled.health.failures
         } else {
-            // 服务器不在连接池中，创建一个失败记录
             let pooled = PooledConnection {
                 conn: None,
                 last_used: Instant::now(),
@@ -384,8 +383,15 @@ impl ConnectionPool {
                 continue;
             }
             
+            // 如果服务器已标记为不健康，尝试恢复
+            if pooled.health.failures >= self.config.max_failures {
+                pooled.health.failures = pooled.health.failures.saturating_sub(1);  // 逐步恢复
+                pooled.health.last_check = Instant::now();
+                tracing::debug!("Attempting to recover server {} (failures: {})", addr, pooled.health.failures);
+                continue;
+            }
+            
             if let Some(ref conn) = pooled.conn {
-                // 使用超时机制进行健康检查
                 match tokio::time::timeout(
                     Duration::from_secs(3), 
                     conn.health_check()
@@ -397,21 +403,19 @@ impl ConnectionPool {
                         tracing::debug!("Server {} healthy, latency: {}ms", addr, pooled.health.latency_ms);
                     }
                     Ok(Err(e)) => {
-                        pooled.health.failures += 1;
-                        pooled.conn = None; // 清除失效连接
+                        pooled.health.failures = (pooled.health.failures + 1).min(self.config.max_failures);
+                        pooled.conn = None;
                         self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("Server {} health check failed ({}/{}): {}", 
                             addr, pooled.health.failures, self.config.max_failures, e);
                         
-                        // 立即标记为不可用
                         if pooled.health.failures >= self.config.max_failures {
                             to_remove.push(addr);
                         }
                     }
                     Err(_) => {
-                        // 超时
-                        pooled.health.failures += 1;
-                        pooled.conn = None; // 清除失效连接
+                        pooled.health.failures = (pooled.health.failures + 1).min(self.config.max_failures);
+                        pooled.conn = None;
                         self.metrics.failed_connections.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("Server {} health check timed out ({}/{})", 
                             addr, pooled.health.failures, self.config.max_failures);
