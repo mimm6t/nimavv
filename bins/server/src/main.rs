@@ -213,9 +213,9 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         use tokio::net::TcpStream;
         use tokio::io::AsyncWriteExt;
-        use rand::Rng;
+        use rand::{Rng, SeedableRng};
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::StdRng::from_entropy();
         loop {
             // 随机延迟 25-35 秒
             let delay = rng.gen_range(25..=35);
