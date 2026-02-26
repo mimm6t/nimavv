@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
 use gvbyh_worker_client::WorkerClient;
-use bytes::{Bytes, BytesMut};
+use bytes::{Bytes, BytesMut, Buf};
 
 // DoH 解析器
 async fn resolve_with_doh(domain: &str) -> anyhow::Result<std::net::IpAddr> {
@@ -632,18 +632,28 @@ async fn handle_proxy_encrypted(
     
     let crypto_up = crypto.clone();
     let up = async move {
+        let mut accumulated = BytesMut::new();
         let mut buf = vec![0u8; 65536];
         
         loop {
             match client_recv.read(&mut buf).await {
                 Ok(Some(n)) => {
-                    if let Ok((packet, _)) = SmtpPacket::decode(Bytes::copy_from_slice(&buf[..n])) {
-                        if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
-                            if target_write.write_all(&decrypted).await.is_err() {
-                                break;
+                    accumulated.extend_from_slice(&buf[..n]);
+                    
+                    // 尝试解析所有完整的包
+                    while !accumulated.is_empty() {
+                        match SmtpPacket::decode(accumulated.clone().freeze()) {
+                            Ok((packet, consumed)) => {
+                                if let Ok(decrypted) = crypto_up.decrypt(&packet.payload) {
+                                    if target_write.write_all(&decrypted).await.is_err() {
+                                        return;
+                                    }
+                                    accumulated.advance(consumed);
+                                } else {
+                                    return;
+                                }
                             }
-                        } else {
-                            break;
+                            Err(_) => break, // 等待更多数据
                         }
                     }
                 }
