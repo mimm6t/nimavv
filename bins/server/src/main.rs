@@ -293,7 +293,7 @@ async fn start_quic_server(
                     handle_connection(connection, dh_secret, dh_public, root_key, buffer_pool).await;
                 }
                 Err(e) => {
-                    tracing::error!("Connection failed: {}", e);
+                    tracing::debug!("Connection failed: {}", e);
                 }
             }
         });
@@ -331,7 +331,7 @@ async fn handle_connection(
                 });
             }
             Err(e) => {
-                tracing::error!("Accept stream error: {}", e);
+                tracing::debug!("Accept stream error: {}", e);
                 break;
             }
         }
