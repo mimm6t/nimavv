@@ -141,7 +141,7 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
                     Ok(Some(n)) => {
                         accumulated.extend_from_slice(&buf[..n]);
                         
-                        // 尝试解析所有完整的包
+                        // 尝试解析所有完整的SMTP包
                         while !accumulated.is_empty() {
                             match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
                                 Ok((packet, consumed)) => {
@@ -154,7 +154,7 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
                                         return Ok(());
                                     }
                                 }
-                                Err(_) => break, // 等待更多数据
+                                Err(_) => break,
                             }
                         }
                     }

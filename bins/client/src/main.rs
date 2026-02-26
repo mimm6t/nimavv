@@ -254,6 +254,23 @@ async fn main() -> Result<()> {
     // 启动连接池维护任务
     pool.start_maintenance().await;
     
+    // 预建立100个连接（并行）- 加速所有请求
+    tracing::info!("Pre-warming connection pool with 100 connections...");
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        let mut handles = Vec::new();
+        for _ in 0..100 {
+            let pool = pool_clone.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = pool.get().await;
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+        tracing::info!("✓ Connection pool pre-warmed");
+    });
+    
     // 测试连接（尝试所有服务器）
     tracing::info!("Testing connection pool...");
     let mut last_error = None;
