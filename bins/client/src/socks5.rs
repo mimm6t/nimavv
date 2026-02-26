@@ -133,16 +133,28 @@ async fn handle_client(mut stream: TcpStream, conn: Arc<QuicConnection>) -> Resu
         };
         
         let download = async {
+            let mut accumulated = bytes::BytesMut::new();
             let mut buf = vec![0u8; 65536];
             
             loop {
                 match proxy_recv.read(&mut buf).await {
                     Ok(Some(n)) => {
-                        if let Ok((packet, _)) = gvbyh_core::SmtpPacket::decode(bytes::Bytes::copy_from_slice(&buf[..n])) {
-                            if let Ok(decrypted) = crypto.decrypt(&packet.payload) {
-                                if sw.write_all(&decrypted).await.is_err() {
-                                    break;
+                        accumulated.extend_from_slice(&buf[..n]);
+                        
+                        // 尝试解析所有完整的包
+                        while !accumulated.is_empty() {
+                            match gvbyh_core::SmtpPacket::decode(accumulated.clone().freeze()) {
+                                Ok((packet, consumed)) => {
+                                    if let Ok(decrypted) = crypto.decrypt(&packet.payload) {
+                                        if sw.write_all(&decrypted).await.is_err() {
+                                            return Ok(());
+                                        }
+                                        accumulated.advance(consumed);
+                                    } else {
+                                        return Ok(());
+                                    }
                                 }
+                                Err(_) => break, // 等待更多数据
                             }
                         }
                     }
