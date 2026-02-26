@@ -145,23 +145,18 @@ async fn main() -> Result<()> {
     
     tracing::info!("Registering to Worker...");
     
-    // 尝试注册，如果失败则尝试更新
+    // Server重启后DH密钥已变化，必须重新注册（不能update）
+    // 先尝试删除旧记录
+    if std::path::Path::new(&uuid_file).exists() {
+        tracing::info!("Deleting old server record from Worker...");
+        let _ = worker_client.delete_server(&uuid).await; // 忽略错误
+    }
+    
+    // 重新注册
     let root_key = match worker_client.register(&uuid, &encrypted_ip, &public_key).await {
         Ok(key) => {
             tracing::info!("✓ Registered successfully");
             key
-        }
-        Err(gvbyh_worker_client::WorkerError::UuidConflict) => {
-            tracing::warn!("UUID already exists, trying to update...");
-            worker_client.update(&uuid, &encrypted_ip).await?;
-            tracing::info!("✓ Updated successfully");
-            
-            // 从本地读取 root_key
-            if let Ok(bytes) = std::fs::read(".gvbyh-server-rootkey") {
-                BASE64.encode(&bytes)
-            } else {
-                anyhow::bail!("UUID exists but no local root_key found. Delete .gvbyh-server-uuid to re-register.");
-            }
         }
         Err(e) => {
             tracing::error!("Registration failed: {}", e);
