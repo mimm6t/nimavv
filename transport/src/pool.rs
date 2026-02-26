@@ -38,9 +38,9 @@ impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             max_idle: Duration::from_secs(180),
-            health_check_interval: Duration::from_secs(5),
-            connect_timeout: Duration::from_secs(3),
-            max_failures: 10,  // 增加到10次，避免过早标记为不健康
+            health_check_interval: Duration::from_secs(10),  // 降低检查频率，减少开销
+            connect_timeout: Duration::from_secs(5),  // 增加超时，避免过早失败
+            max_failures: 15,  // 进一步增加容错
             strategy: LoadBalanceStrategy::LeastLatency,
             enable_ipv6: true,
             persist_path: None,

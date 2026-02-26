@@ -17,10 +17,14 @@ impl QuicClient {
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
         
         let mut transport = quinn::TransportConfig::default();
-        transport.max_concurrent_bidi_streams(256u32.into());
-        transport.max_concurrent_uni_streams(256u32.into());
-        transport.max_idle_timeout(Some(Duration::from_secs(180).try_into()?));  // 180秒
+        transport.max_concurrent_bidi_streams(512u32.into());  // 增加并发流
+        transport.max_concurrent_uni_streams(512u32.into());
+        transport.max_idle_timeout(Some(Duration::from_secs(180).try_into()?));
         transport.keep_alive_interval(Some(Duration::from_secs(25)));
+        
+        // 优化窗口大小
+        transport.receive_window(10_000_000u32.into());  // 10MB
+        transport.send_window(10_000_000u64);
         
         // 隐藏QUIC特征
         transport.initial_mtu(1200);
